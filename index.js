@@ -17,7 +17,7 @@ mongoClient.connect().then(() => {
   db = mongoClient.db('batepapo-uol-api')
 })
 
-app.post('/participants', (req, res) => {
+app.post('/participants', async (req, res) => {
   const { name } = req.body
   const lastStatus = Date.now()
   const participant = { name, lastStatus }
@@ -30,65 +30,58 @@ app.post('/participants', (req, res) => {
     time: lastStatus
   }
 
-  db.collection('participants')
-    .insertOne(participant)
-    .then(() => {
-      db.collection('messages')
-        .insertOne(message)
-        .then(() => {
-          res.sendStatus(201)
-        })
-    })
+  await db.collection('participants').insertOne(participant)
+
+  await db.collection('messages').insertOne(message)
+
+  res.sendStatus(201)
 })
 
-app.get('/participants', (req, res) => {
-  db.collection('participants')
-    .find()
-    .toArray()
-    .then(participants => {
-      res.send(participants)
-    })
+app.get('/participants', async (req, res) => {
+  const participants = await db.collection('participants').find().toArray()
+
+  res.send(participants)
 })
 
-app.post('/messages', (req, res) => {
+app.post('/messages', async (req, res) => {
   const { to, text, type } = req.body
   const { user: from } = req.headers
   const time = dayjs().format('HH:mm:ss')
 
   const message = { from, to, text, type, time }
 
-  db.collection('messages')
-    .insertOne(message)
-    .then(() => {
-      res.sendStatus(201)
-    })
+  await db.collection('messages').insertOne(message)
+
+  res.sendStatus(201)
 })
 
-app.get('/messages', (req, res) => {
+app.get('/messages', async (req, res) => {
   const { limit } = req.query
 
-  db.collection('messages')
-    .find()
-    .toArray()
-    .then(array => {
-      res.send(messages(limit, array))
-    })
+  const messages = await db.collection('messages').find().toArray()
+
+  res.send(messagesToSend(limit, messages))
 })
 
-app.post('/status', (req, res) => {
+app.post('/status', async (req, res) => {
   const { user } = req.headers
   const lastStatus = Date.now()
 
-  db.collection('participants')
+  await db
+    .collection('participants')
     .updateOne({ name: user }, { $set: { lastStatus } })
-    .then(() => {
-      res.sendStatus(200)
-    })
+
+  res.sendStatus(200)
 })
 
-app.listen(5000)
+app.listen(5000, () => {
+  const now = Math.floor(Date.now() / 1000)
+  const now1 = dayjs(Date.now()).unix()
+  console.log('usando Math', now)
+  console.log('usando dayjs', now1)
+})
 
-function messages(limit, array) {
+function messagesToSend(limit, array) {
   if (limit === undefined) {
     return [...array].reverse()
   }
