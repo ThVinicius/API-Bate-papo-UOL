@@ -27,7 +27,7 @@ app.post('/participants', async (req, res) => {
     to: 'Todos',
     text: 'entra na sala...',
     type: 'status',
-    time: lastStatus
+    time: dayjs().format('HH:mm:ss')
   }
 
   await db.collection('participants').insertOne(participant)
@@ -57,8 +57,11 @@ app.post('/messages', async (req, res) => {
 
 app.get('/messages', async (req, res) => {
   const { limit } = req.query
+  const { user } = req.headers
 
-  const messages = await db.collection('messages').find().toArray()
+  let messages = await db.collection('messages').find().toArray()
+
+  messages = messages.filter(item => filterMessages(item, user))
 
   res.send(messagesToSend(limit, messages))
 })
@@ -87,3 +90,36 @@ function messagesToSend(limit, array) {
   }
   return [...array].reverse().slice(0, limit)
 }
+
+function filterMessages({ from, to, type }, user) {
+  return (
+    type === 'message' ||
+    type === 'status' ||
+    from === user ||
+    (type === 'private_message' && to === user)
+  )
+}
+
+setInterval(async () => {
+  const now = Date.now()
+
+  const participants = await db.collection('participants').find().toArray()
+
+  for (const { _id, name, lastStatus } of participants) {
+    const lastStatusUser = Math.floor(lastStatus / 1000)
+
+    if (Math.floor(now / 1000) - lastStatusUser > 10) {
+      const message = {
+        from: name,
+        to: 'Todos',
+        text: 'sai da sala...',
+        type: 'status',
+        time: dayjs(now).format('HH:mm:ss')
+      }
+
+      await db.collection('messages').insertOne(message)
+
+      await db.collection('participants').deleteOne({ _id })
+    }
+  }
+}, 15000)
