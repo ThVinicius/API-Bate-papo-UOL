@@ -1,8 +1,19 @@
 import express, { json } from 'express'
-import { MongoClient } from 'mongodb'
+import { MongoClient, ObjectId } from 'mongodb'
 import dotenv from 'dotenv'
 import cors from 'cors'
 import dayjs from 'dayjs'
+import joi from 'joi'
+
+const messagesSchema = joi.object({
+  to: joi.string().trim().required(),
+  text: joi.string().trim().required(),
+  type: joi.string().valid('message', 'private_message').required()
+})
+
+const participantsSchema = joi.object({
+  name: joi.string().trim().required()
+})
 
 const app = express()
 
@@ -19,6 +30,17 @@ mongoClient.connect().then(() => {
 
 app.post('/participants', async (req, res) => {
   const { name } = req.body
+
+  const validation = participantsSchema.validate({ name })
+
+  if (validation.error) {
+    return res.sendStatus(422)
+  }
+
+  const participants = await db.collection('participants').find().toArray()
+
+  if (participants.some(item => item.name === name)) return res.sendStatus(409)
+
   const lastStatus = Date.now()
   const participant = { name, lastStatus }
 
@@ -44,8 +66,21 @@ app.get('/participants', async (req, res) => {
 })
 
 app.post('/messages', async (req, res) => {
-  const { to, text, type } = req.body
   const { user: from } = req.headers
+
+  const fromSchema = joi.array().has(joi.object({ name: from }).unknown())
+
+  const participants = await db.collection('participants').find().toArray()
+
+  const validationBody = messagesSchema.validate(req.body)
+  const validationHeaders = fromSchema.validate(participants)
+
+  if (validationBody.error || validationHeaders.error) {
+    return res.sendStatus(422)
+  }
+
+  const { to, text, type } = req.body
+
   const time = dayjs().format('HH:mm:ss')
 
   const message = { from, to, text, type, time }
@@ -68,6 +103,17 @@ app.get('/messages', async (req, res) => {
 
 app.post('/status', async (req, res) => {
   const { user } = req.headers
+
+  const fromSchema = joi.array().has(joi.object({ name: user }).unknown())
+
+  const participants = await db.collection('participants').find().toArray()
+
+  const validationHeaders = fromSchema.validate(participants)
+
+  if (validationHeaders.error) {
+    return res.sendStatus(422)
+  }
+
   const lastStatus = Date.now()
 
   await db
@@ -77,18 +123,40 @@ app.post('/status', async (req, res) => {
   res.sendStatus(200)
 })
 
-app.listen(5000, () => {
-  const now = Math.floor(Date.now() / 1000)
-  const now1 = dayjs(Date.now()).unix()
-  console.log('usando Math', now)
-  console.log('usando dayjs', now1)
+app.delete('/messages/:id', async (req, res) => {
+  const { id } = req.params
+  const { user } = req.headers
+
+  const message = await db
+    .collection('messages')
+    .find({ _id: new ObjectId(id) })
+
+  await db.collection('messages').deleteOne({ _id: new ObjectId(id) })
 })
+
+app.put('/messages/:id', async (req, res) => {
+  const _id = new ObjectId(req.params.id)
+  const { to, text, type } = req.body
+  const { user: from } = req.headers
+
+  const messageToSend = {
+    from,
+    to,
+    text,
+    type,
+    time: dayjs().format('HH:mm:ss')
+  }
+
+  await db.collection('messages').updateOne({ _id }, { $set: messageToSend })
+})
+
+app.listen(5000)
 
 function messagesToSend(limit, array) {
   if (limit === undefined) {
-    return [...array].reverse()
+    return array
   }
-  return [...array].reverse().slice(0, limit)
+  return array.slice(-limit)
 }
 
 function filterMessages({ from, to, type }, user) {
