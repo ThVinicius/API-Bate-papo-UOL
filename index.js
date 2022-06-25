@@ -4,6 +4,7 @@ import dotenv from 'dotenv'
 import cors from 'cors'
 import dayjs from 'dayjs'
 import joi from 'joi'
+import { stripHtml } from 'string-strip-html'
 
 const messagesSchema = joi.object({
   to: joi.string().trim().required(),
@@ -29,7 +30,7 @@ mongoClient.connect().then(() => {
 })
 
 app.post('/participants', async (req, res) => {
-  const { name } = req.body
+  const name = stripHtml(req.body.name).result
 
   const validation = participantsSchema.validate({ name })
 
@@ -37,9 +38,11 @@ app.post('/participants', async (req, res) => {
     return res.sendStatus(422)
   }
 
-  const participants = await db.collection('participants').find().toArray()
+  const filterParticipants = await db
+    .collection('participants')
+    .findOne({ name: { $eq: name } })
 
-  if (participants.some(item => item.name === name)) return res.sendStatus(409)
+  if (filterParticipants !== null) return res.sendStatus(409)
 
   const lastStatus = Date.now()
   const participant = { name, lastStatus }
@@ -66,7 +69,7 @@ app.get('/participants', async (req, res) => {
 })
 
 app.post('/messages', async (req, res) => {
-  const { user: from } = req.headers
+  const from = stripHtml(req.headers.user).result
 
   const fromSchema = joi.array().has(joi.object({ name: from }).unknown())
 
@@ -79,7 +82,9 @@ app.post('/messages', async (req, res) => {
     return res.sendStatus(422)
   }
 
-  const { to, text, type } = req.body
+  const to = stripHtml(req.body.to).result.trim()
+  const text = stripHtml(req.body.text).result.trim()
+  const type = stripHtml(req.body.type).result.trim()
 
   const time = dayjs().format('HH:mm:ss')
 
@@ -111,7 +116,7 @@ app.post('/status', async (req, res) => {
   const validationHeaders = fromSchema.validate(participants)
 
   if (validationHeaders.error) {
-    return res.sendStatus(422)
+    return res.sendStatus(404)
   }
 
   const lastStatus = Date.now()
@@ -124,14 +129,22 @@ app.post('/status', async (req, res) => {
 })
 
 app.delete('/messages/:id', async (req, res) => {
-  const { id } = req.params
-  const { user } = req.headers
+  const _id = new ObjectId(req.params.id)
+  const user = stripHtml(req.headers.user).result
 
-  const message = await db
-    .collection('messages')
-    .find({ _id: new ObjectId(id) })
+  const message = await db.collection('messages').findOne({ _id })
 
-  await db.collection('messages').deleteOne({ _id: new ObjectId(id) })
+  switch (true) {
+    case message === null:
+      return res.sendStatus(404)
+
+    case message !== null && user !== message.from:
+      return res.sendStatus(401)
+
+    default:
+      await db.collection('messages').deleteOne({ _id })
+      return res.sendStatus(200)
+  }
 })
 
 app.put('/messages/:id', async (req, res) => {
@@ -170,24 +183,25 @@ function filterMessages({ from, to, type }, user) {
 
 setInterval(async () => {
   const now = Date.now()
+  const tenSegondsAgo = now - 1000 * 10
+  const filter = { lastStatus: { $lt: tenSegondsAgo } }
 
-  const participants = await db.collection('participants').find().toArray()
+  const participants = await db
+    .collection('participants')
+    .find(filter)
+    .toArray()
 
-  for (const { _id, name, lastStatus } of participants) {
-    const lastStatusUser = Math.floor(lastStatus / 1000)
-
-    if (Math.floor(now / 1000) - lastStatusUser > 10) {
-      const message = {
-        from: name,
-        to: 'Todos',
-        text: 'sai da sala...',
-        type: 'status',
-        time: dayjs(now).format('HH:mm:ss')
-      }
-
-      await db.collection('messages').insertOne(message)
-
-      await db.collection('participants').deleteOne({ _id })
+  for (const { _id, name } of participants) {
+    const message = {
+      from: name,
+      to: 'Todos',
+      text: 'sai da sala...',
+      type: 'status',
+      time: dayjs(now).format('HH:mm:ss')
     }
+
+    await db.collection('messages').insertOne(message)
+
+    await db.collection('participants').deleteOne({ _id })
   }
 }, 15000)
