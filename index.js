@@ -99,9 +99,18 @@ app.get('/messages', async (req, res) => {
   const { limit } = req.query
   const { user } = req.headers
 
-  let messages = await db.collection('messages').find().toArray()
+  const filterUserMessages = {
+    $or: [
+      { to: 'Todos' },
+      { from: user },
+      { $and: [{ type: 'private_message' }, { to: user }] }
+    ]
+  }
 
-  messages = messages.filter(item => filterMessages(item, user))
+  const messages = await db
+    .collection('messages')
+    .find(filterUserMessages)
+    .toArray()
 
   res.send(messagesToSend(limit, messages))
 })
@@ -148,9 +157,29 @@ app.delete('/messages/:id', async (req, res) => {
 })
 
 app.put('/messages/:id', async (req, res) => {
-  const _id = new ObjectId(req.params.id)
+  const { id } = req.params
   const { to, text, type } = req.body
   const { user: from } = req.headers
+
+  const participants = await db.collection('participants').find().toArray()
+
+  const fromSchema = joi.array().has(joi.object({ name: from }).unknown())
+
+  const validationBody = messagesSchema.validate(req.body)
+  const validationHeaders = fromSchema.validate(participants)
+
+  if (validationBody.error || validationHeaders.error)
+    return res.sendStatus(422)
+
+  const findMessages = await db
+    .collection('messages')
+    .findOne({ _id: ObjectId(id) })
+
+  console.log(findMessages)
+
+  if (findMessages === null) return res.sendStatus(404)
+
+  if (findMessages.from !== from) return res.sendStatus(401)
 
   const messageToSend = {
     from,
@@ -160,7 +189,11 @@ app.put('/messages/:id', async (req, res) => {
     time: dayjs().format('HH:mm:ss')
   }
 
-  await db.collection('messages').updateOne({ _id }, { $set: messageToSend })
+  await db
+    .collection('messages')
+    .updateOne({ _id: ObjectId(id) }, { $set: messageToSend })
+
+  res.sendStatus(200)
 })
 
 app.listen(5000)
@@ -170,15 +203,6 @@ function messagesToSend(limit, array) {
     return array
   }
   return array.slice(-limit)
-}
-
-function filterMessages({ from, to, type }, user) {
-  return (
-    type === 'message' ||
-    type === 'status' ||
-    from === user ||
-    (type === 'private_message' && to === user)
-  )
 }
 
 setInterval(async () => {
