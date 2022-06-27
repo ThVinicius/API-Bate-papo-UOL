@@ -16,6 +16,12 @@ const participantsSchema = joi.object({
   name: joi.string().trim().required()
 })
 
+const userSchema = joi
+  .object({ user: joi.string().trim().required() })
+  .unknown()
+
+const idSchema = joi.object({ id: joi.string().trim().required() })
+
 const app = express()
 
 dotenv.config()
@@ -30,13 +36,13 @@ mongoClient.connect().then(() => {
 })
 
 app.post('/participants', async (req, res) => {
-  const name = stripHtml(req.body.name).result
-
-  const validation = participantsSchema.validate({ name })
+  const validation = participantsSchema.validate(req.body)
 
   if (validation.error) {
     return res.sendStatus(422)
   }
+
+  const name = stripHtml(req.body.name).result
 
   const filterParticipants = await db
     .collection('participants')
@@ -62,16 +68,16 @@ app.post('/participants', async (req, res) => {
   res.sendStatus(201)
 })
 
-app.get('/participants', async (req, res) => {
+app.get('/participants', async (_, res) => {
   const participants = await db.collection('participants').find().toArray()
 
   res.send(participants)
 })
 
 app.post('/messages', async (req, res) => {
-  const from = stripHtml(req.headers.user).result
-
-  const fromSchema = joi.array().has(joi.object({ name: from }).unknown())
+  const fromSchema = joi
+    .array()
+    .has(joi.object({ name: req.headers.user }).unknown())
 
   const participants = await db.collection('participants').find().toArray()
 
@@ -85,6 +91,7 @@ app.post('/messages', async (req, res) => {
   const to = stripHtml(req.body.to).result.trim()
   const text = stripHtml(req.body.text).result.trim()
   const type = stripHtml(req.body.type).result.trim()
+  const from = stripHtml(req.headers.user).result
 
   const time = dayjs().format('HH:mm:ss')
 
@@ -96,12 +103,21 @@ app.post('/messages', async (req, res) => {
 })
 
 app.get('/messages', async (req, res) => {
-  const { limit } = req.query
-  const { user } = req.headers
+  const limitSchema = joi
+    .object({ limit: joi.number().integer().required() })
+    .allow({})
+
+  const validationUser = userSchema.validate(req.headers)
+  const validationLimit = limitSchema.validate(req.query)
+
+  if (validationUser.error || validationLimit.error) return res.sendStatus(422)
+
+  const user = stripHtml(req.headers.user).result
+  const limit = Number(req.query.limit)
 
   const filterUserMessages = {
     $or: [
-      { to: 'Todos' },
+      { $or: [{ to: 'Todos' }, { to: user }] },
       { from: user },
       { $and: [{ type: 'private_message' }, { to: user }] }
     ]
@@ -116,7 +132,12 @@ app.get('/messages', async (req, res) => {
 })
 
 app.post('/status', async (req, res) => {
-  const { user } = req.headers
+  let user
+  try {
+    user = stripHtml(req.headers.user).result
+  } catch (error) {
+    return res.status(406).send(error)
+  }
 
   const fromSchema = joi.array().has(joi.object({ name: user }).unknown())
 
@@ -138,48 +159,74 @@ app.post('/status', async (req, res) => {
 })
 
 app.delete('/messages/:id', async (req, res) => {
-  const _id = new ObjectId(req.params.id)
+  const idValidation = idSchema.validate(req.params)
+  const validationUser = userSchema.validate(req.headers)
+
+  if (idValidation.error || validationUser) return res.sendStatus(422)
+
+  const id = stripHtml(req.params.id).result
   const user = stripHtml(req.headers.user).result
 
-  const message = await db.collection('messages').findOne({ _id })
+  try {
+    const message = await db
+      .collection('messages')
+      .findOne({ _id: ObjectId(id) })
 
-  switch (true) {
-    case message === null:
-      return res.sendStatus(404)
+    switch (true) {
+      case message === null:
+        return res.sendStatus(404)
 
-    case message !== null && user !== message.from:
-      return res.sendStatus(401)
+      case message !== null && user !== message.from:
+        return res.sendStatus(401)
 
-    default:
-      await db.collection('messages').deleteOne({ _id })
-      return res.sendStatus(200)
+      default:
+        await db.collection('messages').deleteOne({ _id: ObjectId(id) })
+        return res.sendStatus(200)
+    }
+  } catch (error) {
+    return res
+      .status(500)
+      .send(
+        'Argument passed in must be a string of 12 bytes or a string of 24 hex characters or an integer'
+      )
   }
 })
 
 app.put('/messages/:id', async (req, res) => {
-  const { id } = req.params
-  const { to, text, type } = req.body
-  const { user: from } = req.headers
-
   const participants = await db.collection('participants').find().toArray()
 
-  const fromSchema = joi.array().has(joi.object({ name: from }).unknown())
+  const fromSchema = joi
+    .array()
+    .has(joi.object({ name: req.headers.user }).unknown())
 
   const validationBody = messagesSchema.validate(req.body)
   const validationHeaders = fromSchema.validate(participants)
+  const validationId = idSchema.validate(req.params)
 
-  if (validationBody.error || validationHeaders.error)
+  if (validationBody.error || validationHeaders.error || validationId.error)
     return res.sendStatus(422)
 
-  const findMessages = await db
-    .collection('messages')
-    .findOne({ _id: ObjectId(id) })
+  const id = stripHtml(req.params.id).result
+  const to = stripHtml(req.body.to).result
+  const text = stripHtml(req.body.text).result
+  const type = stripHtml(req.body.type).result
+  const from = stripHtml(req.headers.user).result
 
-  console.log(findMessages)
+  try {
+    const findMessages = await db
+      .collection('messages')
+      .findOne({ _id: ObjectId(id) })
 
-  if (findMessages === null) return res.sendStatus(404)
+    if (findMessages === null) return res.sendStatus(404)
 
-  if (findMessages.from !== from) return res.sendStatus(401)
+    if (findMessages.from !== from) return res.sendStatus(401)
+  } catch (error) {
+    return res
+      .status(500)
+      .send(
+        'Argument passed in must be a string of 12 bytes or a string of 24 hex characters or an integer'
+      )
+  }
 
   const messageToSend = {
     from,
